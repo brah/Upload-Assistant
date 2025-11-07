@@ -375,55 +375,79 @@ async def process_meta(meta, base_dir, bot=None):
         else:
             meta['skip_uploading'] = int(config['DEFAULT'].get('tracker_pass_checks', 1))
 
-    if successful_trackers < int(meta['skip_uploading']) and not meta['debug']:
-        console.print(f"[red]Not enough successful trackers ({successful_trackers}/{meta['skip_uploading']}). EXITING........[/red]")
+    async def perform_site_check(common):
+        for tracker in meta["trackers"]:
+            if tracker not in meta.get("tracker_status", {}):
+                continue
+
+            tracker_status = meta["tracker_status"].get(tracker, {})
+            passed_checks = (
+                not tracker_status.get("banned", False)
+                and not tracker_status.get("skipped", False)
+                and not tracker_status.get("dupe", False)
+            )
+            has_trumpable = (
+                tracker == "AITHER"
+                and meta.get("aither_trumpable")
+                and len(meta.get("aither_trumpable", [])) > 0
+            )
+
+            if not passed_checks and not has_trumpable:
+                continue
+
+            log_path = f"{base_dir}/tmp/{tracker}_search_results.json"
+            if not await common.path_exists(log_path):
+                await common.makedirs(os.path.dirname(log_path))
+
+            search_data = []
+            if os.path.exists(log_path):
+                try:
+                    async with aiofiles.open(log_path, "r", encoding="utf-8") as f:
+                        content = await f.read()
+                        search_data = json.loads(content) if content.strip() else []
+                except Exception:
+                    search_data = []
+
+            existing_uuids = {
+                entry.get("uuid") for entry in search_data if isinstance(entry, dict)
+            }
+
+            if meta["uuid"] not in existing_uuids:
+                search_entry = {
+                    "uuid": meta["uuid"],
+                    "path": meta.get("path", ""),
+                    "imdb_id": meta.get("imdb_id", 0),
+                    "tmdb_id": meta.get("tmdb_id", 0),
+                    "tvdb_id": meta.get("tvdb_id", 0),
+                    "mal_id": meta.get("mal_id", 0),
+                    "tvmaze_id": meta.get("tvmaze_id", 0),
+                }
+                if tracker == "AITHER":
+                    search_entry["trumpable"] = meta.get("aither_trumpable", "")
+                search_data.append(search_entry)
+
+                async with aiofiles.open(log_path, "w", encoding="utf-8") as f:
+                    await f.write(json.dumps(search_data, indent=4))
+
+    if successful_trackers < int(meta["skip_uploading"]) and not meta["debug"]:
+        console.print(
+            f"[red]Not enough successful trackers ({successful_trackers}/{meta['skip_uploading']}). EXITING........[/red]"
+        )
+
+        if meta.get("site_check", False):
+            meta["we_are_uploading"] = True
+            common = COMMON(config)
+            await perform_site_check(common)
+            meta["we_are_uploading"] = False
+
+        return
 
     else:
-        meta['we_are_uploading'] = True
+        meta["we_are_uploading"] = True
         common = COMMON(config)
-        if meta.get('site_check', False):
-            for tracker in meta['trackers']:
-                upload_status = meta['tracker_status'].get(tracker, {}).get('upload', False)
-                if not upload_status:
-                    if tracker == "AITHER" and meta.get('aither_trumpable') and len(meta.get('aither_trumpable', [])) > 0:
-                        pass
-                    else:
-                        continue
-                if tracker not in meta['tracker_status']:
-                    continue
-
-                log_path = f"{base_dir}/tmp/{tracker}_search_results.json"
-                if not await common.path_exists(log_path):
-                    await common.makedirs(os.path.dirname(log_path))
-
-                search_data = []
-                if os.path.exists(log_path):
-                    try:
-                        async with aiofiles.open(log_path, 'r', encoding='utf-8') as f:
-                            content = await f.read()
-                            search_data = json.loads(content) if content.strip() else []
-                    except Exception:
-                        search_data = []
-
-                existing_uuids = {entry.get('uuid') for entry in search_data if isinstance(entry, dict)}
-
-                if meta['uuid'] not in existing_uuids:
-                    search_entry = {
-                        'uuid': meta['uuid'],
-                        'path': meta.get('path', ''),
-                        'imdb_id': meta.get('imdb_id', 0),
-                        'tmdb_id': meta.get('tmdb_id', 0),
-                        'tvdb_id': meta.get('tvdb_id', 0),
-                        'mal_id': meta.get('mal_id', 0),
-                        'tvmaze_id': meta.get('tvmaze_id', 0),
-                    }
-                    if tracker == "AITHER":
-                        search_entry['trumpable'] = meta.get('aither_trumpable', '')
-                    search_data.append(search_entry)
-
-                    async with aiofiles.open(log_path, 'w', encoding='utf-8') as f:
-                        await f.write(json.dumps(search_data, indent=4))
-            meta['we_are_uploading'] = False
+        if meta.get("site_check", False):
+            await perform_site_check(common)
+            meta["we_are_uploading"] = False
             return
 
         filename = meta.get('title', None)
